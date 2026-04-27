@@ -1,24 +1,27 @@
-# 📊 PROJECT_STATE — IA-MANTAIN
+# 📊 PROJECT_STATE.md — IA-MANTAIN
 
-> **Função:** Snapshot de progresso. Cole isto no início de qualquer conversa nova com IA pra retomar contexto.
-> **Última atualização:** 2026-04-25
+> **Propósito:** Memória viva do projeto. Snapshot de progresso + registro de decisões, contexto, pendências e dívidas técnicas.
+> **Quando ler:** Antes de começar nova sessão de desenvolvimento (cole no início de qualquer conversa nova com IA).
+> **Quando atualizar:** Ao final de cada sessão com decisões arquiteturais.
+> **Última atualização:** 2026-04-27
 
 ---
 
 ## 🎯 IDENTIDADE DO PROJETO
 
-- **Nome:** ia-mantain
+- **Nome:** ia-mantain (sucessor de `dashboard-manutencao`)
 - **Domínio:** Mineradora ⛏️ (NÃO é refinaria de petróleo)
+- **Objetivo:** Gestão e análise de Ordens de Manutenção (SAP) com assistente IA conversacional
 - **Localização:** `C:\Users\filip\Desktop\github\sistema-manutencao\ia-mantain`
 - **Predecessor:** dashboard-manutencao (Streamlit, ~1 mês e 15 dias de desenvolvimento)
 - **Mantenedor:** Filipe (Santaluz, BA, Brasil)
+- **Fase atual:** 📐 Planejamento arquitetural (definição dos AGENTS.md + refinamento do core)
 
 ---
 
 ## 🛠️ STACK CONFIRMADA
 
 ### Frontend
-
 - Next.js 14+ (App Router)
 - TypeScript (strict)
 - TailwindCSS + shadcn/ui
@@ -28,20 +31,17 @@
 - Supabase Auth client (`@supabase/ssr`)
 
 ### Backend
-
 - FastAPI (Python 3.11+)
 - SQLAlchemy 2.0 async + Alembic
 - Pydantic v2
-- LangChain + Google Gemini (`create_sql_agent`, NÃO `pandas_dataframe_agent`)
+- LangChain + Google Gemini (`create_sql_agent`, **NÃO** `pandas_dataframe_agent`)
 
 ### Banco
-
 - Supabase (PostgreSQL + Auth + RLS)
 
 ### Deploy (a definir)
-
 - Frontend: Vercel
-- Backend: Railway/Render/Fly.io
+- Backend: Railway / Render / Fly.io
 - Banco: Supabase Cloud
 
 ---
@@ -59,11 +59,13 @@
 
 1. **IA = SQL Agent**, NÃO Pandas Agent
 2. **Datas = Padrão Dual-Format** (ISO8601 → fallback BR `dayfirst=True`)
-3. **Colunas RAW vs CALC** — CALC nunca persiste no banco
+3. **Colunas RAW vs DERIVED vs CALC** — CALC nunca persiste no banco; DERIVED persiste com `versao_derivador`
 4. **Constantes canônicas** — nunca hardcode nomes de colunas SAP
 5. **Validação dupla RBAC** — UI + Backend
 6. **Drill-down declarativo** — nunca manipular DOM imperativo
 7. **Outer Join no df_sap_completo** — nunca `how='left'`
+8. **FK lógica entre `ordens` e `apontamentos_horas`** — sem `REFERENCES` SQL (apontamento pode chegar antes da ordem)
+9. **Concatenação data+hora obrigatória** no pipeline (banco usa `TIMESTAMPTZ`)
 
 ---
 
@@ -101,60 +103,273 @@
 
 ---
 
-## ✅ ARQUIVOS JÁ CRIADOS
+## 📅 Histórico de Sessões
 
-### Estrutura
+### Sessão 1 — Definição inicial
+- Estrutura geral do projeto definida
+- `AGENTS.md` raiz criado
+- `docs/ARCHITECTURE.md`, `docs/BUSINESS_RULES.md`, `docs/DATA_CONTRACT.md` criados
+- Princípio DRY + cache + state management estabelecidos
+- `frontend/AGENTS.md`, `backend/AGENTS.md`, `docs/SECURITY.md` criados
 
-- [x] Pastas do projeto (frontend, backend, docs + subpastas)
-- [x] Arquivos vazios (AGENTS.md hierárquicos + docs)
+### Sessão 2 — Refinamento do core (27/04/2026) ✅
+- Análise das planilhas reais do cliente (Notas, Ordens, Horas)
+- Decisões D1–D9 registradas (ver abaixo)
+- `backend/core/AGENTS.md` finalizado
 
-### Conteúdo escrito
+---
 
-- [x] `AGENTS.md` (raiz) + Seção 6 de Segurança
-- [x] `frontend/AGENTS.md`
-- [x] `backend/AGENTS.md`
-- [x] `docs/SECURITY.md` ← NOVO
+## 🎯 Decisões Arquiteturais
+
+### Sessão 2 — 27/04/2026
+
+#### **D1. Tabela `apontamentos_horas` separada** ⭐
+- **Decisão:** Apontamentos de horas vão em tabela dedicada, não na tabela `ordens`.
+- **Por quê:** 1 ordem tem N apontamentos (vários operadores, vários dias). Modelar como coluna em `ordens` quebraria a normalização e impediria análise por operador/turno.
+- **Junção:** via `numero_ordem` (FK lógica, sem `REFERENCES` SQL).
+- **Por que sem FK rígida:** apontamento pode chegar antes da ordem ser importada.
+
+#### **D2. Princípio de Robustez (Lei de Postel)**
+- **Decisão:** 3 categorias de colunas no upload: mapeadas / ignoradas-conhecidas / desconhecidas.
+- **Por quê:** Planilhas SAP podem ganhar colunas extras sem aviso. Sistema não pode quebrar ao receber coluna desconhecida.
+- **Implementação:** `COLUNAS_IGNORADAS_*` em `constants.py` + warning no log para desconhecidas.
+
+#### **D3. Categorias de campos: RAW / DERIVED / CALC**
+- **Decisão:** Persistir DERIVED (`status_canonico`, `classificacao`, `turno`) no banco.
+- **Por quê:** Performance em queries + estabilidade quando fonte muda + permite versionamento de regras.
+- **Versionamento:** `versao_derivador = 'v1'` permite reprocessar histórico quando regra muda.
+
+#### **D4. Multi-source com `fonte_dado`**
+- **Decisão:** Coluna `fonte_dado` na tabela `ordens` diferencia origem (notas / ordens / api).
+- **Por quê:** Permite suportar múltiplos layouts SAP sem migrar dados antigos.
+- **MVP:** apenas `fonte_dado = 'notas'`. ORDENS preparado mas não implementado.
+- **Trade-off:** algumas colunas ficam NULL conforme fonte (ex: custos só em ORDENS).
+
+#### **D5. Concatenação data+hora obrigatória**
+- **Decisão:** Toda planilha SAP que separa data e hora é mesclada em datetime único no pipeline.
+- **Por quê:** Banco armazena `TIMESTAMPTZ` único; turno/duração precisam de datetime completo.
+- **Aplicação:** notas (`inicio_avaria`, `fim_avaria`), horas (`data_inicio_real`, `data_fim_real`).
+
+#### **D6. Upload com 3 cards independentes**
+- **Decisão:** Frontend tem cards separados para Notas / Horas / Ordens (Ordens bloqueado no MVP).
+- **Por quê:** Usuário entende claramente qual planilha está enviando; validação por tipo é mais clara.
+- **UX:** drag-and-drop em cada card, botão "Processar" só ativa com algum arquivo carregado.
+
+#### **D7. Regex `\bprev` em vez de `\bprevent`**
+- **Decisão:** Padrão de classificação preventiva usa radical curto.
+- **Por quê:** Pega `"PREV-001"` que não casava com `prevent`.
+- **Aprendizado:** sempre testar regex com casos reais SAP antes de incorporar.
+
+#### **D8. MTTR adiado para versão futura** ⏳
+- **Decisão:** Não calcular MTTR no MVP.
+- **Por quê:** Coluna `Duração da parada` vem zerada do SAP (preenchimento manual descontinuado pelo cliente). Calcular via `fim_avaria - inicio_avaria` exigiria validação de qualidade dos dados que não cabe no MVP.
+- **Frontend:** card de MTTR mostra mensagem "Em atualização" + ícone (?) que abre modal explicativo.
+- **Registrado como:** TD-02 (tech debt).
+
+#### **D9. Documentação dedicada ao usuário final**
+- **Decisão:** 3 manuais novos em `docs/`:
+  - `MANUAL_USUARIO.md` — passo a passo de exportação SAP + uso do dashboard
+  - `MANUAL_SUPORTE.md` — troubleshooting + reset de dados
+  - `LIMITACOES_MVP.md` — transparência sobre o que ainda não funciona
+- **Por quê:** Reduz pressão sobre suporte; cria expectativa correta no usuário.
+
+---
+
+## 🔒 Decisões de segurança registradas
+
+- httpOnly cookies para JWT
+- Usuário `ia_readonly` para LangChain
+- Validação MIME via `python-magic`
+- System prompt blindado contra injection
+- Rate limit IA: 30/hora/usuário
+
+---
+
+## 🏗️ Estado Atual da Arquitetura
+
+### Tabelas no banco (PostgreSQL)
+
+| Tabela | Status | Notas |
+|---|---|---|
+| `ordens` | 📐 Modelada | Multi-source (notas/ordens/api). Campos RAW + DERIVED. |
+| `apontamentos_horas` | 📐 Modelada | FK lógica para `ordens.numero_ordem`. |
+| `uploads` | 📐 Modelada | Auditoria de uploads (qual arquivo, quando, por quem). |
+
+### Estrutura de pastas
+
+```
+ia-mantain/
+├── AGENTS.md                       ✅ Criado (Sessão 1) + Seção 6 Segurança
+├── PROJECT_STATE.md                ✅ Atualizado (Sessão 2)
+├── docs/
+│   ├── ARCHITECTURE.md             ⏳ A criar
+│   ├── BUSINESS_RULES.md           ⏳ A criar
+│   ├── DATA_CONTRACT.md            ⏳ A criar
+│   ├── SECURITY.md                 ✅ Criado (Sessão 1)
+│   ├── PRD.md                      ⏳ A criar
+│   ├── HISTORICAL_BUGS.md          ⏳ A criar
+│   ├── CHANGELOG.md                ⏳ A criar
+│   ├── MANUAL_USUARIO.md           ⏳ A criar (P5)
+│   ├── MANUAL_SUPORTE.md           ⏳ A criar (P6)
+│   └── LIMITACOES_MVP.md           ⏳ A criar (P7)
+├── backend/
+│   ├── AGENTS.md                   ✅ Criado (Sessão 1)
+│   ├── core/
+│   │   └── AGENTS.md               ✅ Finalizado (Sessão 2)
+│   ├── api/
+│   │   └── AGENTS.md               ⏳ A criar ← PRÓXIMO
+│   ├── ia/
+│   │   └── AGENTS.md               ⏳ A criar
+│   └── db/
+│       └── AGENTS.md               ⏳ A criar
+└── frontend/
+    ├── AGENTS.md                   ⏳ A criar
+    └── app/
+        ├── (auth)/AGENTS.md        ⏳ A criar
+        ├── cockpit/AGENTS.md       ⏳ A criar
+        └── analista/AGENTS.md      ⏳ A criar
+```
 
 ### ⏳ PRÓXIMO ARQUIVO A CRIAR
 
-- [ ] `backend/core/AGENTS.md` ← AQUI PARAMOS
+- [ ] `backend/api/AGENTS.md` (FastAPI: rotas, Pydantic, auth, validação de upload)
 
-### 🔒 Decisões de segurança registradas
+---
 
-- httpOnly cookies para JWT
-- Usuário ia_readonly para LangChain
-- Validação MIME via python-magic
-- System prompt blindado contra injection
-- Rate limit IA: 30/hora/usuário
+## 📋 Pendências de Revisão
+
+> **⚠️ Importante:** Estas pendências são consequência das decisões da Sessão 2.
+> Devem ser revisadas **na fase final**, após todos os AGENTS.md estarem prontos.
+
+### 🔴 Alta prioridade (impacto arquitetural)
+
+#### **P1. `docs/ARCHITECTURE.md`** — Adicionar conceitos novos
+- [ ] Adicionar tabela `apontamentos_horas` no diagrama de banco
+- [ ] Atualizar fluxo de upload para 3 fontes (Notas / Horas / Ordens)
+- [ ] Documentar relação 1:N entre `ordens` e `apontamentos_horas`
+- [ ] Explicar princípio de FK lógica (sem `REFERENCES` SQL)
+- [ ] Adicionar seção sobre versionamento de derivadores
+
+#### **P2. `docs/DATA_CONTRACT.md`** — Adicionar contrato da planilha de Horas
+- [ ] Documentar colunas RAW: `Nº pessoal`, `Ordem`, `Trabalho real`, datas/horas
+- [ ] Documentar regra de concatenação data+hora
+- [ ] Documentar que `numero_ordem` é a chave de junção
+- [ ] Adicionar exemplos de linhas válidas/inválidas
+
+#### **P3. `docs/BUSINESS_RULES.md`** — Adicionar regras novas
+- [ ] Regra "1 ordem pode ter N apontamentos de hora"
+- [ ] Regra "MTTR adiado — não calcular no MVP"
+- [ ] Regra "Mistura de fontes não recomendada — usar reset"
+- [ ] Regra de derivação de status por fonte (notas vs ordens)
+
+### 🟡 Média prioridade (consistência)
+
+#### **P4. `AGENTS.md` raiz** — Atualizar visão geral
+- [ ] Mencionar "Apontamento de Horas" como 3ª fonte de dados
+- [ ] Atualizar diagrama de fluxo de dados
+- [ ] Confirmar que regras de DRY/cache continuam válidas com nova arquitetura
+
+### 🟢 Baixa prioridade (criação nova)
+
+#### **P5. Criar `docs/MANUAL_USUARIO.md`**
+- [ ] Passo a passo: como exportar planilha do SAP (Notas / Horas / Ordens)
+- [ ] Passo a passo: como subir cada planilha no dashboard
+- [ ] Glossário de termos (turno, classificação, MTTR, etc)
+- [ ] FAQ comum
+
+#### **P6. Criar `docs/MANUAL_SUPORTE.md`**
+- [ ] Como resetar dados via endpoint admin
+- [ ] Como reprocessar derivadores (versão nova)
+- [ ] Como adicionar nova `coluna ignorada` em `constants.py`
+- [ ] Troubleshooting comum (erros de upload, datas inválidas, etc)
+
+#### **P7. Criar `docs/LIMITACOES_MVP.md`**
+- [ ] ⚠️ MTTR não disponível
+- [ ] ⚠️ Layout ORDENS não suportado
+- [ ] ⚠️ Custos só em ORDENS (futuro)
+- [ ] ⚠️ Sem integração SAP direta
+- [ ] ⚠️ Mistura de fontes exige reset
+
+---
+
+## 🚧 Tech Debt — Registro Formal
+
+> Tech debt = decisões conscientes de "fazer pior agora pra entregar mais rápido".
+> Cada item tem ID, prioridade, motivo, custo estimado e plano de remediação.
+
+| ID | Item | Prioridade | Motivo da postergação | Custo | Quando atacar |
+|---|---|---|---|---|---|
+| **TD-01** | Implementar `proc_ordens.py` (suporte ao layout ORDENS) | 🟡 Média | Cliente usa layout NOTAS hoje. Migração será manual e planejada. | ~3 dias | Quando cliente decidir migrar |
+| **TD-02** | Calcular MTTR via `fim_avaria - inicio_avaria` | 🟢 Baixa | Coluna `Duração da parada` zerada no SAP. Falta validação de qualidade dos timestamps. | ~2 dias | Após estabilização do MVP |
+| **TD-03** | Endpoint `/admin/reprocessar-derivacoes` | 🟢 Baixa | Versão `v1` dos derivadores está estável. Necessário só quando mudar regra. | ~1 dia | Quando precisar mudar `VERSAO_DERIVADOR` |
+| **TD-04** | Endpoint `/admin/reset-dados` | 🟠 **Alta** | **Essencial antes de produção.** Usuário precisa poder limpar tudo ao trocar de layout. | ~0.5 dia | **Pré-produção** |
+| **TD-05** | Integração SAP direta (fonte `API_SAP`) | 🔵 Longo prazo | Requer credenciais SAP, biblioteca específica, segurança. Fora de escopo do MVP. | ~10 dias | Roadmap V2 |
+| **TD-06** | Detecção automática do tipo de planilha no upload | 🟢 Baixa | UX atual com 3 cards é clara. Detecção automática seria "nice to have". | ~1 dia | Pós-MVP |
+| **TD-07** | Análise financeira (custos) | 🟡 Média | Custos só vêm no layout ORDENS. Bloqueado por TD-01. | ~2 dias | Após TD-01 |
+| **DT-10** | Refatorar `processamento.py` (era God Module ~450 linhas no projeto anterior) | 🟡 Média | Já mitigado pela nova estrutura modular (`core/proc_*.py`). | — | Validar na primeira implementação |
+
+### Convenções de prioridade
+
+- 🔴 **Crítica** = Bloqueia produção / segurança
+- 🟠 **Alta** = Necessária pré-produção
+- 🟡 **Média** = Importante mas não bloqueante
+- 🟢 **Baixa** = Melhoria incremental
+- 🔵 **Longo prazo** = Roadmap futuro
+
+---
+
+## 🐛 Bugs Históricos Registrados (do projeto anterior)
+
+| ID | Descrição | Status |
+|---|---|---|
+| **BUG-001** | Datas com 56% de NaT | ✅ Resolvido com Padrão Dual-Format |
+| **BUG-002** | `removeChild` no drill-down | ✅ Resolvido com renderização declarativa |
+| **BUG-003** | `how='left'` perdia ordens sem apontamento | ✅ Resolvido com `how='outer'` |
+| **DT-10** | `processamento.py` virou God Module (~450 linhas) | ⏳ A refatorar — ver tabela Tech Debt |
+
+---
+
+## 🎓 Aprendizados / Princípios Reforçados
+
+> Coleção de princípios validados durante o desenvolvimento. Servem de referência para decisões futuras em situações análogas.
+
+1. **Princípio de Robustez (Postel)** — Liberal na entrada, conservador na saída. *Aplicado em D2.*
+2. **DERIVED > CALC quando há multi-source** — Quando a regra de derivação depende da fonte, persistir é mais seguro que calcular em runtime. *Aplicado em D3.*
+3. **FK lógica > FK rígida em pipelines de ETL** — Dados podem chegar fora de ordem; validação na aplicação é mais flexível. *Aplicado em D1.*
+4. **Versionamento de regras > regras mutáveis** — Quando uma lógica de negócio pode mudar, versionar permite reprocessar histórico. *Aplicado em D3 (`VERSAO_DERIVADOR`).*
+5. **Documentação ao usuário > suporte reativo** — Investir em manual reduz pressão sobre suporte e cria expectativa correta. *Aplicado em D9.*
+6. **Tech debt declarado > tech debt escondido** — Registrar formalmente o que foi postergado evita "amnésia coletiva" e priorização ruim. *Aplicado em todo TD-\*.*
+7. **Testar regex com dados reais > testar mentalmente** — `\bprevent` parecia funcionar mas não pegava `"PREV-001"`. Sempre validar com fixtures do SAP. *Aplicado em D7.*
 
 ---
 
 ## 📋 ROADMAP COMPLETO
 
 ### Fase 1: AGENTS.md hierárquicos
-
 - [x] `AGENTS.md` (raiz)
-- [x] `frontend/AGENTS.md`
+- [ ] `frontend/AGENTS.md`
 - [x] `backend/AGENTS.md`
-- [x] `docs/SECURITY.md` ← NOVO
-- [ ] `backend/core/AGENTS.md` (ETL/anticorrupção SAP)
+- [x] `docs/SECURITY.md`
+- [x] `backend/core/AGENTS.md` ← Finalizado na Sessão 2
+- [ ] `backend/api/AGENTS.md` ← **PRÓXIMO**
 - [ ] `backend/ia/AGENTS.md` (SQL Agent + ECharts)
-- [ ] `backend/api/AGENTS.md` (routers REST)
 - [ ] `backend/db/AGENTS.md` (schemas + migrations)
 - [ ] `frontend/app/(auth)/AGENTS.md`
 - [ ] `frontend/app/cockpit/AGENTS.md`
 - [ ] `frontend/app/analista/AGENTS.md`
 
 ### Fase 2: Documentação técnica
-
 - [ ] `docs/PRD.md`
-- [ ] `docs/DATA_CONTRACT.md` (schema do banco + colunas RAW/CALC)
-- [ ] `docs/BUSINESS_RULES.md` (REGRAS_HORARIO, classificação ordens)
-- [ ] `docs/HISTORICAL_BUGS.md` (lições do projeto anterior)
+- [ ] `docs/DATA_CONTRACT.md` (criado — revisar P2)
+- [ ] `docs/BUSINESS_RULES.md` (criado — revisar P3)
+- [ ] `docs/ARCHITECTURE.md` (criado — revisar P1)
+- [ ] `docs/HISTORICAL_BUGS.md`
 - [ ] `docs/CHANGELOG.md`
+- [ ] `docs/MANUAL_USUARIO.md` (P5)
+- [ ] `docs/MANUAL_SUPORTE.md` (P6)
+- [ ] `docs/LIMITACOES_MVP.md` (P7)
 
 ### Fase 3: Skills (Workflows do Antigravity)
-
 - [ ] `/criar-skill` (meta-skill)
 - [ ] `/criar-componente`
 - [ ] `/criar-router`
@@ -164,7 +379,6 @@
 - [ ] `/registrar-decisao`
 
 ### Fase 4: Setup técnico
-
 - [ ] `.gitignore`
 - [ ] `.env.example`
 - [ ] `README.md`
@@ -173,12 +387,23 @@
 
 ---
 
-## 🐛 BUGS HISTÓRICOS REGISTRADOS (do projeto anterior)
+## 🚀 Próximos Passos
 
-1. **BUG-001:** Datas com 56% de NaT (resolvido com Padrão Dual-Format)
-2. **BUG-002:** `removeChild` no drill-down (resolvido com renderização declarativa)
-3. **BUG-003:** `how='left'` perdia ordens sem apontamento (resolvido com `how='outer'`)
-4. **DT-10:** `processamento.py` virou God Module com ~450 linhas (a refatorar no novo projeto)
+### Imediato (próxima sessão)
+- [ ] Criar `backend/api/AGENTS.md` (FastAPI: rotas, Pydantic, auth, validação de upload)
+
+### Curto prazo
+- [ ] Criar `backend/ia/AGENTS.md` (LangChain + Gemini + segurança)
+- [ ] Criar `backend/db/AGENTS.md` (schemas + migrations)
+- [ ] Criar AGENTS.md por rota do frontend (`(auth)`, `cockpit`, `analista`)
+
+### Antes de começar a implementar
+- [ ] Revisão geral de **TODOS** os AGENTS.md já criados
+- [ ] Resolver pendências **P1–P7** listadas acima
+- [ ] Criar manuais **P5, P6, P7**
+
+### Pré-produção
+- [ ] Implementar **TD-04** (`/admin/reset-dados`) — bloqueante
 
 ---
 
@@ -200,12 +425,24 @@ Antes de gerar qualquer arquivo, eu (IA) DEVO verificar:
 
 - [ ] O domínio é **mineradora** (não refinaria)
 - [ ] Tempo do projeto anterior: **1 mês e 15 dias**
-- [ ] Usar TanStack Query, NÃO useState pra dados servidos
-- [ ] Usar SQL Agent, NÃO Pandas Agent
+- [ ] Usar **TanStack Query**, NÃO `useState` pra dados servidos
+- [ ] Usar **SQL Agent**, NÃO Pandas Agent
 - [ ] Hierarquia de pastas conforme estrutura confirmada
 - [ ] Limites de linha conforme tabela
 - [ ] Cores HSL definidas em `lib/constants.ts`
+- [ ] **Apontamentos de horas em tabela separada** (D1)
+- [ ] **FK lógica** entre `ordens` e `apontamentos_horas` (sem `REFERENCES`)
+- [ ] **Concatenar data+hora** no pipeline antes de persistir (D5)
+- [ ] **Não calcular MTTR** no MVP (D8 / TD-02)
 
 ---
 
-> 🤝 **Este arquivo é o "save game"
+## 📞 Contatos / Stakeholders
+
+- **Product Owner / Dev:** Filipe (Santaluz, BA, Brasil)
+- **Cliente final:** Equipe de manutenção que usa SAP (mineradora)
+- **Suporte:** A definir (possivelmente o próprio Filipe na fase MVP)
+
+---
+
+> 🤝 **Este arquivo é o "save game" do projeto.** Mantenha-o atualizado ao final de cada sessão.
