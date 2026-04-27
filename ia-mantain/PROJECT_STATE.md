@@ -3,7 +3,8 @@
 > **Propósito:** Memória viva do projeto. Snapshot de progresso + registro de decisões, contexto, pendências e dívidas técnicas.
 > **Quando ler:** Antes de começar nova sessão de desenvolvimento (cole no início de qualquer conversa nova com IA).
 > **Quando atualizar:** Ao final de cada sessão com decisões arquiteturais.
-> **Última atualização:** 2026-04-27
+> **Última atualização:** 2026-04-27 (Sessão 4 — backend/ia/AGENTS.md)
+> **Atualização anterior:** 2026-04-27 (Sessão 3 — backend/api/AGENTS.md)
 
 ---
 
@@ -46,12 +47,15 @@
 
 ---
 
-## 👥 RBAC — 4 PAPÉIS
+## 👥 RBAC — 3 PAPÉIS
 
-1. **Visitante** (não logado): só vê cockpit
-2. **Coordenador**: + ver detalhes
-3. **Assistente**: + upload + chat IA + editar efetivo
-4. **Supervisor**: + gerenciar usuários + limpar banco
+> ⚠️ **Correção registrada na Sessão 3:** o documento original mencionava 4 papéis. Decisão final: **3 papéis** com herança.
+
+1. **Viewer** 👁️ — vê cockpit + interage com IA
+2. **Operator** 🔧 — tudo de Viewer + upload + manipulação de dados + edição (futura)
+3. **Admin** 👑 — tudo de Operator + reset banco + config turnos + gestão usuários
+
+Hierarquia: `Viewer < Operator < Admin` (com herança de permissões).
 
 ---
 
@@ -105,6 +109,14 @@
 
 ## 📅 Histórico de Sessões
 
+### Sessão 4 — Camada IA (27/04/2026) ✅
+- `backend/ia/AGENTS.md` finalizado
+- Decisões D16–D19 registradas
+- Tech Debts TD-11, TD-12, TD-13, TD-14, TD-15 adicionados
+- 5 camadas anti-prompt-injection definidas
+- Views `vw_ia_*` especificadas (5 views no MVP)
+- Tool `gerar_grafico` (ECharts) modelada
+
 ### Sessão 1 — Definição inicial
 - Estrutura geral do projeto definida
 - `AGENTS.md` raiz criado
@@ -116,10 +128,77 @@
 - Análise das planilhas reais do cliente (Notas, Ordens, Horas)
 - Decisões D1–D9 registradas (ver abaixo)
 - `backend/core/AGENTS.md` finalizado
+  
+### Sessão 3 — Camada API (27/04/2026) ✅
+- `backend/api/AGENTS.md` finalizado
+- Decisões D10–D15 registradas (ver abaixo)
+- Tech Debts TD-08, TD-09, TD-10 adicionados
+- Correção: RBAC ajustado de 4 para 3 papéis (Viewer/Operator/Admin)
+- Pendências H1–H6 do módulo Horas & Efetivo registradas para sessão dedicada
 
 ---
 
 ## 🎯 Decisões Arquiteturais
+
+### Sessão 4 — 27/04/2026
+
+#### **D16. Gemini 2.5 Flash como modelo padrão**
+- **Decisão:** `gemini-2.5-flash`, temperature=0, max_output_tokens=2048.
+- **Por quê:** Melhor custo/benefício pra SQL Agent, free tier amigável (15 req/min, 1.500/dia).
+- **Fallback:** modelo configurável via `IA_GEMINI_MODEL`.
+
+#### **D17. Memória conversacional simplificada (MVP)**
+- **Decisão:** `ConversationBufferWindowMemory(k=5)` em memória do processo.
+- **Por quê:** Implementação rápida pra MVP. Persistência em banco fica como TD-11.
+- **Trade-off:** restart do servidor zera histórico.
+
+#### **D18. Views dedicadas `vw_ia_*` como interface da IA**
+- **Decisão:** IA acessa apenas 5 views (`vw_ia_ordens`, `vw_ia_apontamentos`, `vw_ia_indicadores_mes`, `vw_ia_bad_actors`, `vw_ia_efetivo`).
+- **Por quê:** Esconde campos sensíveis, renomeia em PT-BR amigável, reduz tokens, isola schema.
+- **Implementação:** role `ia_readonly` com `GRANT SELECT` apenas nessas views. `REVOKE ALL` em tabelas.
+
+#### **D19. Tool `gerar_grafico` para visualizações**
+- **Decisão:** IA chama tool dedicada que retorna JSON config Apache ECharts.
+- **Por quê:** IA decide quando faz sentido (vs sempre/nunca). Tipos suportados: bar, line, pie, scatter.
+- **Frontend:** renderiza ECharts diretamente do JSON retornado.
+
+### Sessão 3 — 27/04/2026
+
+#### **D10. Supabase Auth como provider central**
+- **Decisão:** Backend FastAPI **não emite JWT próprio** — apenas valida JWT do Supabase via JWKS.
+- **Por quê:** Supabase já gerencia auth, sessions, recuperação de senha. Reinventar = trabalho duplicado e superfície de ataque maior.
+- **Implementação:** middleware `verify_supabase_jwt` + cookie httpOnly `sb-access-token`.
+- **Role:** vem de `app_metadata.role` no payload do JWT.
+
+#### **D11. RBAC com 3 papéis hierárquicos**
+- **Decisão:** Viewer < Operator < Admin (com herança).
+- **Por quê:** MVP com 1-5 usuários não precisa de granularidade fina. Evolução pra mais papéis fica como roadmap.
+- **Implementação:** `Role` StrEnum + `ROLE_HIERARCHY` dict + `require_role()` dependency.
+- **Correção:** documento original mencionava 4 papéis (Visitante/Coordenador/Assistente/Supervisor) — descartado.
+
+#### **D12. Upload sem persistência de arquivo (Opção A)**
+- **Decisão:** Processa arquivo em memória, descarta após inserção. Tabela `uploads` registra apenas metadados.
+- **Por quê:** MVP não precisa de auditoria física de arquivos. Evita custo de storage e complexidade de retenção.
+- **Metadados persistidos:** hash SHA-256, nome original, tamanho, linhas processadas, status, fonte, usuário, timestamp.
+- **Evolução futura:** TD-09 (storage físico para auditoria).
+
+#### **D13. Configuração de turnos no sistema (não no SAP)**
+- **Decisão:** Tabela `configuracao_turnos` editável por Admin. Derivador `turno` consulta config atual.
+- **Por quê:** SAP não tem campo de turno; é regra interna da fábrica e pode mudar.
+- **Implicação:** mudança de config exige reprocessamento dos registros existentes (TD-08).
+
+#### **D14. Indicadores comparativos como categoria principal**
+- **Decisão:** 3 famílias de indicadores no MVP:
+  - **Comparativo mensal** (mês X vs mês Y)
+  - **Desempenho geral** (consolidado por período)
+  - **Bad actors** (drill-down por equipamento)
+- **Endpoints estruturados genericamente.** Detalhamento de cada KPI em sessão dedicada.
+
+#### **D15. Módulo Horas & Efetivo — estrutura preservada da spec antiga**
+- **Decisão:** Aproveitar a spec `skill_horas_efetivo.md` como base. Endpoints REST estruturados, lógica adaptada do projeto Streamlit.
+- **Tabela nova:** `efetivo_planejado` (matricula, nome, regime, horas S1-S5, mensal).
+- **Endpoints:** `/efetivo/*`, `/colaboradores/{matricula}/raio-x`, `/indicadores/horas-comparativo`.
+- **Pendências H1-H6** registradas para sessão dedicada (UI de edição, auto-save, regra Plan_Mes, visões mensal/semanal, métricas raio-X, filtros drill-down).
 
 ### Sessão 2 — 27/04/2026
 
@@ -217,9 +296,9 @@ ia-mantain/
 │   ├── core/
 │   │   └── AGENTS.md               ✅ Finalizado (Sessão 2)
 │   ├── api/
-│   │   └── AGENTS.md               ⏳ A criar ← PRÓXIMO
+│   │   └── AGENTS.md               ✅ Finalizado (Sessão 3)
 │   ├── ia/
-│   │   └── AGENTS.md               ⏳ A criar
+│   │   └── AGENTS.md               ✅ Finalizado (Sessão 4)
 │   └── db/
 │       └── AGENTS.md               ⏳ A criar
 └── frontend/
@@ -232,7 +311,7 @@ ia-mantain/
 
 ### ⏳ PRÓXIMO ARQUIVO A CRIAR
 
-- [ ] `backend/api/AGENTS.md` (FastAPI: rotas, Pydantic, auth, validação de upload)
+- [ ] `backend/db/AGENTS.md` (modelos SQLAlchemy + migrations Alembic + RLS Supabase)
 
 ---
 
@@ -289,7 +368,17 @@ ia-mantain/
 - [ ] ⚠️ Custos só em ORDENS (futuro)
 - [ ] ⚠️ Sem integração SAP direta
 - [ ] ⚠️ Mistura de fontes exige reset
+      
+#### **P8. `PROJECT_STATE.md` — Correção RBAC** ✅ (resolvido nesta atualização)
+- [x] Mudar de 4 para 3 papéis (Viewer/Operator/Admin)
 
+#### **P9. Sessão dedicada — Módulo Horas & Efetivo**
+- [ ] Resolver H1: UI de edição (tabela editável vs form)
+- [ ] Resolver H2: estratégia de save (auto-save vs botão)
+- [ ] Resolver H3: regra Plan_Mes (S1-S4+S5 parcial vs mês corrido)
+- [ ] Resolver H4: manter visões mensal e semanal?
+- [ ] Resolver H5: confirmar métricas do raio-X
+- [ ] Resolver H6: filtros do drill-down
 ---
 
 ## 🚧 Tech Debt — Registro Formal
@@ -306,7 +395,15 @@ ia-mantain/
 | **TD-05** | Integração SAP direta (fonte `API_SAP`) | 🔵 Longo prazo | Requer credenciais SAP, biblioteca específica, segurança. Fora de escopo do MVP. | ~10 dias | Roadmap V2 |
 | **TD-06** | Detecção automática do tipo de planilha no upload | 🟢 Baixa | UX atual com 3 cards é clara. Detecção automática seria "nice to have". | ~1 dia | Pós-MVP |
 | **TD-07** | Análise financeira (custos) | 🟡 Média | Custos só vêm no layout ORDENS. Bloqueado por TD-01. | ~2 dias | Após TD-01 |
+| **TD-08** | Reprocessamento automático ao mudar config de turno | 🟡 Média | Ao alterar `configuracao_turnos`, registros antigos ficam com turno desatualizado. Job assíncrono não é trivial. | ~1 dia | Quando admin mudar turnos pela 1ª vez |
+| **TD-09** | Auditoria física de arquivos (storage de uploads originais) | 🟢 Baixa | MVP só guarda metadados. Para auditoria completa precisaria S3/disco organizado. | ~2 dias | Pós-MVP, sob demanda do cliente |
+| **TD-10** | Detalhamento dos endpoints de Horas & Efetivo | 🟡 Média | Estrutura genérica criada, falta resolver pendências H1-H6 em sessão dedicada. | ~1 dia | Sessão dedicada do módulo Horas |
 | **DT-10** | Refatorar `processamento.py` (era God Module ~450 linhas no projeto anterior) | 🟡 Média | Já mitigado pela nova estrutura modular (`core/proc_*.py`). | — | Validar na primeira implementação |
+| **TD-11** | Persistir histórico de chat em tabela `ia_conversations` | 🟡 Média | Memória in-memory perde no restart, sem auditoria | ~1 dia | Pós-MVP |
+| **TD-12** | Streaming de resposta IA via SSE | 🟢 Baixa | UX progressiva, não bloqueia | ~2 dias | Após validação MVP |
+| **TD-13** | Cache Redis de respostas IA (TTL 1h) | 🟡 Média | Reduz custo + latência em perguntas repetidas | ~1 dia | Quando custo escalar |
+| **TD-14** | Fine-tuning do system prompt com logs reais | 🟢 Baixa | Iteração contínua baseada em uso | Ongoing | Após 1.000+ perguntas |
+| **TD-15** | Tool `glossario_lookup` dedicada | 🟢 Baixa | Hoje glossário fica no system prompt (mais tokens) | ~0,5 dia | Quando prompt crescer |
 
 ### Convenções de prioridade
 
@@ -351,7 +448,7 @@ ia-mantain/
 - [x] `backend/AGENTS.md`
 - [x] `docs/SECURITY.md`
 - [x] `backend/core/AGENTS.md` ← Finalizado na Sessão 2
-- [ ] `backend/api/AGENTS.md` ← **PRÓXIMO**
+- [x] `backend/api/AGENTS.md` ← **PRÓXIMO**
 - [ ] `backend/ia/AGENTS.md` (SQL Agent + ECharts)
 - [ ] `backend/db/AGENTS.md` (schemas + migrations)
 - [ ] `frontend/app/(auth)/AGENTS.md`
@@ -434,6 +531,10 @@ Antes de gerar qualquer arquivo, eu (IA) DEVO verificar:
 - [ ] **FK lógica** entre `ordens` e `apontamentos_horas` (sem `REFERENCES`)
 - [ ] **Concatenar data+hora** no pipeline antes de persistir (D5)
 - [ ] **Não calcular MTTR** no MVP (D8 / TD-02)
+- [ ] **RBAC com 3 papéis** (Viewer/Operator/Admin) — não 4 (D11)
+- [ ] **Supabase Auth** valida JWT, não emite (D10)
+- [ ] **Upload Opção A** — não persiste arquivo, só metadados (D12)
+- [ ] **Turnos configuráveis** no sistema, não no SAP (D13)
 
 ---
 
